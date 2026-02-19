@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <title>OpenLayers PGW Viewer</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: Arial, sans-serif;
+            background: #f5f5f5;
+            padding: 20px;
+        }
+        .maps-wrapper {
+            display: flex;
+            gap: 20px;
+            justify-content: center;
+            flex-wrap: wrap;
+        }
+        .map-panel {
+            background: #fff;
+            border-radius: 8px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+            padding: 15px;
+            width: 550px;
+        }
+        .map-panel h2 {
+            text-align: center;
+            margin-bottom: 10px;
+        }
+        .map-panel h2.prod { color: #2e7d32; }
+        .map-panel h2.stage { color: #e65100; }
+        .map-container {
+            width: 100%;
+            height: 400px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+        }
+        .controls {
+            margin: 10px 0;
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+        .controls label { font-weight: bold; font-size: 14px; }
+        .pgw-info {
+            margin-top: 8px;
+            font-size: 12px;
+            color: #666;
+            background: #f9f9f9;
+            padding: 8px;
+            border-radius: 4px;
+            white-space: pre-line;
+            display: none;
+        }
+    </style>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/ol@v7.4.0/ol.css">
+</head>
+<body>
+    <div class="maps-wrapper">
+        <div class="map-panel">
+            <h2 class="prod">PROD</h2>
+            <div class="controls">
+                <label>בחר קובץ PGW:</label>
+                <input type="file" id="pgw-prod" accept=".pgw,.tfw,.jgw,.gfw,.wld">
+            </div>
+            <div id="map-prod" class="map-container"></div>
+            <div id="info-prod" class="pgw-info"></div>
+        </div>
+        <div class="map-panel">
+            <h2 class="stage">STAGE</h2>
+            <div class="controls">
+                <label>בחר קובץ PGW:</label>
+                <input type="file" id="pgw-stage" accept=".pgw,.tfw,.jgw,.gfw,.wld">
+            </div>
+            <div id="map-stage" class="map-container"></div>
+            <div id="info-stage" class="pgw-info"></div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/ol@v7.4.0/dist/ol.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/proj4js/2.11.0/proj4.js"></script>
+    <script>
+        // הגדרת ITM (EPSG:2039)
+        proj4.defs('EPSG:2039', '+proj=tmerc +lat_0=31.73439361111111 +lon_0=35.20451694444445 +k=1.0000067 +x_0=219529.584 +y_0=626907.39 +ellps=GRS80 +towgs84=0,0,0,0,0,0,0 +units=m +no_defs');
+
+        function itmToWgs84(x, y) {
+            return proj4('EPSG:2039', 'EPSG:4326', [x, y]);
+        }
+
+        // פירוש קובץ PGW
+        function parsePgw(text) {
+            const lines = text.trim().split(/\r?\n/).map(l => parseFloat(l.trim()));
+            if (lines.length < 6 || lines.some(isNaN)) return null;
+            return {
+                pixelSizeX: lines[0],
+                rotationY: lines[1],
+                rotationX: lines[2],
+                pixelSizeY: lines[3],
+                originX: lines[4],
+                originY: lines[5],
+            };
+        }
+
+        // יצירת מפת בסיס
+        function createBaseMap(target) {
+            return new ol.Map({
+                target,
+                layers: [ new ol.layer.Tile({ source: new ol.source.OSM() }) ],
+                view: new ol.View({
+                    center: ol.proj.fromLonLat([35.2, 31.8]),
+                    zoom: 8
+                })
+            });
+        }
+
+        // עדכון מפה לפי PGW שנקרא מהקובץ
+        function updateMapFromPgw(map, pgw, infoEl) {
+            // מרכז התמונה (בהנחת 256x256 פיקסלים)
+            const size = 256;
+            const centerX = pgw.originX + (pgw.pixelSizeX * size / 2);
+            const centerY = pgw.originY + (pgw.pixelSizeY * size / 2);
+            const [lon, lat] = itmToWgs84(centerX, centerY);
+
+            // חישוב זום מתאים
+            const mpp = Math.abs(pgw.pixelSizeX);
+            let zoom = 18;
+            if (mpp > 50) zoom = 10;
+            else if (mpp > 20) zoom = 12;
+            else if (mpp > 10) zoom = 13;
+            else if (mpp > 5) zoom = 14;
+            else if (mpp > 2) zoom = 15;
+            else if (mpp > 1) zoom = 16;
+            else if (mpp > 0.5) zoom = 17;
+
+            map.getView().animate({
+                center: ol.proj.fromLonLat([lon, lat]),
+                zoom: zoom,
+                duration: 500
+            });
+
+            // סמן אדום במרכז
+            map.addLayer(new ol.layer.Vector({
+                source: new ol.source.Vector({
+                    features: [
+                        new ol.Feature({
+                            geometry: new ol.geom.Point(ol.proj.fromLonLat([lon, lat]))
+                        })
+                    ]
+                }),
+                style: new ol.style.Style({
+                    image: new ol.style.Circle({
+                        radius: 8,
+                        fill: new ol.style.Fill({ color: 'red' }),
+                        stroke: new ol.style.Stroke({ color: 'white', width: 2 })
+                    })
+                })
+            }));
+
+            // הצגת מידע
+            infoEl.style.display = 'block';
+            infoEl.textContent =
+                `גודל פיקסל X: ${pgw.pixelSizeX.toFixed(4)} מ'\n` +
+                `גודל פיקסל Y: ${pgw.pixelSizeY.toFixed(4)} מ'\n` +
+                `פינה שמאלית עליונה (ITM): X=${pgw.originX.toFixed(2)}, Y=${pgw.originY.toFixed(2)}\n` +
+                `מרכז (WGS84): lon=${lon.toFixed(6)}, lat=${lat.toFixed(6)}`;
+        }
+
+        // יצירת שתי המפות
+        const mapProd = createBaseMap('map-prod');
+        const mapStage = createBaseMap('map-stage');
+
+        // קריאת קובץ PGW בזמן אמת - PROD
+        document.getElementById('pgw-prod').addEventListener('change', function (e) {
+            const file = e.target.files[0];
+            if (!file) return;
+            file.text().then(text => {
+                const pgw = parsePgw(text);
+                if (!pgw) { alert('קובץ PGW לא תקין'); return; }
+                updateMapFromPgw(mapProd, pgw, document.getElementById('info-prod'));
+            });
+        });
+
+        // קריאת קובץ PGW בזמן אמת - STAGE
+        document.getElementById('pgw-stage').addEventListener('change', function (e) {
+            const file = e.target.files[0];
+            if (!file) return;
+            file.text().then(text => {
+                const pgw = parsePgw(text);
+                if (!pgw) { alert('קובץ PGW לא תקין'); return; }
+                updateMapFromPgw(mapStage, pgw, document.getElementById('info-stage'));
+            });
+        });
+    </script>
+</body>
+</html>
